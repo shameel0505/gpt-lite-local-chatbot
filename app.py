@@ -1,22 +1,20 @@
 import streamlit as st
 from transformers import pipeline
 
-st.set_page_config(page_title="Chat with GPT-2", page_icon="🤖")
+st.set_page_config(page_title="Light Chatbot", page_icon="🤖")
 
-# Load HuggingFace model
 @st.cache_resource
 def load_model():
-    return pipeline("text-generation", model="gpt2")
+    return pipeline("text2text-generation", model="google/flan-t5-small")
 
 generator = load_model()
 
-st.title("💬 Chatbot (Powered by HuggingFace GPT-2)")
-st.write("Ask me anything!")
+st.title("🧠 shameels Chatbot (Flan-T5)")
+st.write("Ask me anything — I'll try my best!")
 
-# Chat input
 user_input = st.text_input("You:", key="user_input")
 
 if user_input:
-    with st.spinner("Thinking..."):
-        result = generator(user_input, max_length=100, do_sample=True)[0]['generated_text']
-        st.markdown(f"**Bot:** {result[len(user_input):].strip()}")
+    with st.spinner("Generating response..."):
+        result = generator(user_input, max_new_tokens=100)[0]['generated_text']
+        st.markdown(f"**Bot:** {result}")
