@@ -28,5 +28,5 @@ Welcome to **GPT-Lite**, a fast and privacy-first AI chatbot built with [GPT4All
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/yourusername/gpt-lite-local-chatbot.git
+git clone https://github.com/shameel0505/gpt-lite-local-chatbot.git
 cd gpt-lite-local-chatbot
