@@ -13,11 +13,6 @@ Welcome to **GPT-Lite**, a fast and privacy-first AI chatbot built with [GPT4All
 - 🔁 Clear chat button for fresh conversations
 - ✅ No API keys needed – runs on your device
 
----
-
-## 🖼️ Preview
-
-![Chat UI Screenshot](assets/demo.png) <!-- Add a screenshot if you'd like -->
 
 ---
 
