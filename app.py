@@ -1,92 +1,199 @@
+"""
+GPT-Lite: Production-ready local LLM chat interface.
+Built with Streamlit and GPT4All for zero-telemetry, edge-accelerated inference.
+"""
+
+from datetime import datetime
+import json
+import logging
+from typing import List, Dict, Any
 import streamlit as st
 from gpt4all import GPT4All
-from datetime import datetime
 
-model = GPT4All("mistral-7b-openorca.Q4_0.gguf")
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("gpt-lite")
 
-st.markdown(f"<h1 style='text-align: center; font-size: 42px; color:#FFFFFF'>🙋🏻 shameel's GPT-Lite</h1>", unsafe_allow_html=True)
+st.set_page_config(
+    page_title="GPT-Lite | Local LLM",
+    page_icon="🧠",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# Initialize session state for message history
+# ---------------------------------------------------------
+# Model Management & Caching
+# ---------------------------------------------------------
+AVAILABLE_MODELS = {
+    "Mistral 7B OpenOrca (Q4_0)": "mistral-7b-openorca.Q4_0.gguf",
+    "Llama 3 8B Instruct (Q4_0)": "Meta-Llama-3-8B-Instruct.Q4_0.gguf",
+    "Orca 2 7B (Q4_0)": "orca-2-7b.Q4_0.gguf",
+}
+
+@st.cache_resource(show_spinner=False)
+def load_model(model_name: str, n_threads: int = 4) -> GPT4All:
+    """
+    Cached model loader to prevent memory leaks and reload latency.
+    Keeps model weights memory-mapped in RAM/VRAM.
+    """
+    logger.info(f"Loading local model: {model_name} with {n_threads} threads")
+    return GPT4All(model_name, n_threads=n_threads)
+
+# ---------------------------------------------------------
+# Sidebar Configuration
+# ---------------------------------------------------------
+with st.sidebar:
+    st.title("🧠 GPT-Lite Settings")
+    st.caption("Zero-telemetry local inference engine")
+    
+    selected_model_label = st.selectbox(
+        "Model Selection",
+        options=list(AVAILABLE_MODELS.keys()),
+        index=0,
+        help="GGUF quantized weights stored locally in ~/.cache/gpt4all"
+    )
+    selected_model_file = AVAILABLE_MODELS[selected_model_label]
+    
+    st.divider()
+    st.subheader("Inference Parameters")
+    temperature = st.slider(
+        "Temperature",
+        min_value=0.1,
+        max_value=1.5,
+        value=0.7,
+        step=0.05,
+        help="Higher values yield more creative responses, lower values are more deterministic."
+    )
+    max_tokens = st.slider(
+        "Max Output Tokens",
+        min_value=64,
+        max_value=2048,
+        value=512,
+        step=64,
+        help="Maximum number of tokens to generate per response."
+    )
+    context_window = st.slider(
+        "Context Memory (Turns)",
+        min_value=1,
+        max_value=10,
+        value=4,
+        step=1,
+        help="Number of previous dialogue turns passed into the prompt context."
+    )
+    cpu_threads = st.slider(
+        "CPU Worker Threads",
+        min_value=1,
+        max_value=16,
+        value=4,
+        step=1,
+        help="Number of physical CPU threads allocated for GGML compute."
+    )
+    
+    st.divider()
+    system_prompt = st.text_area(
+        "System Prompt",
+        value="You are an expert AI software engineer and helpful assistant. Provide concise, accurate, and structured answers.",
+        height=100
+    )
+    
+    st.divider()
+    if st.button("🗑️ Clear Conversation", use_container_width=True):
+        st.session_state.messages = []
+        st.session_state.total_tokens_est = 0
+        st.rerun()
+
+# ---------------------------------------------------------
+# State Initialization
+# ---------------------------------------------------------
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "total_tokens_est" not in st.session_state:
+    st.session_state.total_tokens_est = 0
 
-# Input form
-with st.form(key='chat_form'):
-    prompt = st.text_area("Type your message:", height=100)
-    submitted = st.form_submit_button("Send")
+# ---------------------------------------------------------
+# Chat Rendering
+# ---------------------------------------------------------
+st.title("🙋🏻 GPT-Lite Local Assistant")
+st.caption(f"Running on `{selected_model_file}` | Fully Offline | Private")
 
-# Generate and save conversation
-if submitted and prompt:
+# Render historical messages using native st.chat_message (safe from XSS)
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+        if "timestamp" in message:
+            st.caption(f"_{message['timestamp']}_")
+
+# ---------------------------------------------------------
+# User Input & Prompt Construction
+# ---------------------------------------------------------
+prompt = st.chat_input("Ask a question or describe a task...")
+
+if prompt:
+    now_str = datetime.now().strftime("%H:%M")
+    
+    # Append and render user message
     st.session_state.messages.append({
         "role": "user",
         "content": prompt,
-        "timestamp": datetime.now().strftime("%H:%M")
+        "timestamp": now_str
     })
+    with st.chat_message("user"):
+        st.markdown(prompt)
+        st.caption(f"_{now_str}_")
 
-    full_prompt = "You are a helpful assistant.\n\n"
-    for msg in st.session_state.messages:
-        role = "User" if msg["role"] == "user" else "AI"
-        full_prompt += f"{role}: {msg['content']}\n"
-    full_prompt += "AI:"
+    # Load model instance safely
+    try:
+        with st.spinner("Initializing runtime weights..."):
+            model = load_model(selected_model_file, n_threads=cpu_threads)
+    except Exception as e:
+        st.error(f"Failed to load model `{selected_model_file}`: {str(e)}")
+        st.stop()
 
-    with st.spinner("Thinking..."):
-        response = model.generate(full_prompt)
+    # Build memory-managed context prompt
+    # Keep only the last N turns to avoid context overflow and latency degradation
+    trimmed_history = st.session_state.messages[- (context_window * 2):]
+    
+    formatted_prompt = f"### System:\n{system_prompt}\n\n"
+    for msg in trimmed_history:
+        role_tag = "Human" if msg["role"] == "user" else "Assistant"
+        formatted_prompt += f"### {role_tag}:\n{msg['content']}\n\n"
+    formatted_prompt += "### Assistant:\n"
+
+    # Generate model response
+    with st.chat_message("assistant"):
+        with st.spinner("Generating response..."):
+            start_time = datetime.now()
+            try:
+                response = model.generate(
+                    formatted_prompt,
+                    max_tokens=max_tokens,
+                    temp=temperature
+                ).strip()
+            except Exception as e:
+                response = f"⚠️ Generation error: {str(e)}"
+                logger.error(f"Inference failed: {e}", exc_info=True)
+            elapsed = (datetime.now() - start_time).total_seconds()
+            
+            st.markdown(response)
+            st.caption(f"_{datetime.now().strftime('%H:%M')} | Latency: {elapsed:.2f}s_")
+
     st.session_state.messages.append({
-        "role": "ai",
+        "role": "assistant",
         "content": response,
         "timestamp": datetime.now().strftime("%H:%M")
     })
 
-    # Scrollable chat area
-    st.markdown("<div style='height: 400px; overflow-y: auto;'>", unsafe_allow_html=True)
-    for msg in st.session_state.messages:
-        align = "right" if msg["role"] == "user" else "left"
-        bg_color = "#DCF8C6" if msg["role"] == "user" else "#FFFFFF"
-        border_color = "#ddd" if msg["role"] != "user" else "transparent"
-        st.markdown(
-            f"<div style='background-color: {bg_color}; border: 1px solid {border_color}; "
-            f"padding: 10px 15px; border-radius: 18px; margin: 10px 0; max-width: 75%; "
-            f"float: {align}; clear: both; word-wrap: break-word; color: #000000;'>"
-            f"{msg['content']}<br><span style='font-size: 10px; color: #999;'>{msg['timestamp']}</span>"
-            "</div>", unsafe_allow_html=True
+# ---------------------------------------------------------
+# Chat Export Options
+# ---------------------------------------------------------
+if st.session_state.messages:
+    with st.sidebar:
+        st.divider()
+        chat_json = json.dumps(st.session_state.messages, indent=2)
+        st.download_button(
+            "💾 Export Chat (JSON)",
+            data=chat_json,
+            file_name=f"chat_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json",
+            use_container_width=True
         )
-    st.markdown("</div><div style='clear:both;'></div>", unsafe_allow_html=True)
-
-# Clear chat button
-if st.button("Clear Chat"):
-    st.session_state.messages = []
-
-# JavaScript for enter key submission
-st.markdown(f"""
-<script>
-document.addEventListener("keydown", function(e) {{
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {{
-        const textarea = document.activeElement;
-        if (textarea && textarea.tagName === "TEXTAREA") {{
-            e.preventDefault();
-            const buttons = window.parent.document.querySelectorAll('button');
-            buttons.forEach(btn => {{
-                if (btn.innerText === "Send") {{
-                    btn.click();
-                }}
-            }});
-        }}
-    }}
-}});
-</script>
-<style>
-body {{
-    background-color: #f0f2f6;
-}}
-button[kind="primary"] {{
-    background-color: #4CAF50;
-    color: white;
-    padding: 10px 20px;
-    font-size: 16px;
-    border-radius: 8px;
-}}
-button[kind="primary"]:hover {{
-    background-color: #45a049;
-}}
-</style>
-""", unsafe_allow_html=True)
